@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { retrieve, getPortfolioIndex } from "@/lib/retrieve";
+import { rewriteQuery } from "@/lib/rewrite";
 
 export const maxDuration = 60; // Vercel: allow up to 60s for streaming
 
@@ -141,8 +142,10 @@ export async function POST(request: Request) {
 
   let chunks, index;
   try {
-    // Retrieve question-specific detail and the full portfolio index in parallel.
-    [chunks, index] = await Promise.all([retrieve(question), getPortfolioIndex()]);
+    // Resolve follow-ups ("what db does it use?") into a standalone query for
+    // retrieval only — the original message still drives the generated answer.
+    const searchQuery = await rewriteQuery(messages);
+    [chunks, index] = await Promise.all([retrieve(searchQuery), getPortfolioIndex()]);
   } catch (err) {
     // Retrieval touches Postgres + the Voyage API — the usual failure points on
     // a fresh deploy (missing/wrong DATABASE_URL or VOYAGE_API_KEY). Surface a
