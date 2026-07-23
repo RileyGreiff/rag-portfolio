@@ -115,7 +115,18 @@ export async function POST(request: Request) {
   }
 
   const question = messages[messages.length - 1].content;
-  const chunks = await retrieve(question);
+
+  let chunks;
+  try {
+    chunks = await retrieve(question);
+  } catch (err) {
+    // Retrieval touches Postgres + the Voyage API — the usual failure points on
+    // a fresh deploy (missing/wrong DATABASE_URL or VOYAGE_API_KEY). Surface a
+    // short reason so misconfig is diagnosable instead of a blank 500.
+    console.error("retrieve() failed:", err);
+    const detail = err instanceof Error ? err.message : String(err);
+    return Response.json({ error: "Retrieval failed.", detail }, { status: 500, headers: cors });
+  }
 
   const contextBlock =
     chunks.length > 0
