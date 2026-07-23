@@ -96,6 +96,17 @@ function validateBody(body: unknown): ChatMessage[] | null {
 export async function POST(request: Request) {
   const cors = corsHeaders(request.headers.get("origin"));
 
+  // Fail fast with a clear reason if the deploy is missing credentials.
+  const missing = ["ANTHROPIC_API_KEY", "VOYAGE_API_KEY", "DATABASE_URL"].filter(
+    (name) => !process.env[name],
+  );
+  if (missing.length > 0) {
+    return Response.json(
+      { error: "Server misconfigured.", missing },
+      { status: 500, headers: cors },
+    );
+  }
+
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   if (rateLimited(ip)) {
     return Response.json(
