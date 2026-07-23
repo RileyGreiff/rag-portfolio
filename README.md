@@ -1,36 +1,78 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# rag-portfolio
 
-## Getting Started
+A production-style RAG (retrieval-augmented generation) chatbot that answers questions
+about Riley Greiff's projects and experience — grounded in GitHub READMEs and resume
+content, with cited sources.
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+                    ┌──────────── ingest (offline) ────────────┐
+GitHub READMEs ──►  chunk (markdown-aware) ──► embed (Voyage) ──► Postgres + pgvector
+resume / writeups                                                     │
+                                                                      ▼
+Visitor question ──► embed query ──► top-k cosine retrieval ──► Claude (streamed) ──► UI
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Stack
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Layer      | Choice                                        |
+| ---------- | --------------------------------------------- |
+| App        | Next.js 16 (App Router, TypeScript), Tailwind |
+| Generation | Claude (`claude-opus-4-8`), streaming         |
+| Embeddings | Voyage AI `voyage-3.5` (1024 dims)            |
+| Vector DB  | Postgres + pgvector (HNSW, cosine)            |
+| Hosting    | Vercel + Supabase/Neon                        |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Setup
 
-## Learn More
+1. **Provision Postgres with pgvector.** Create a free project on
+   [Supabase](https://supabase.com) or [Neon](https://neon.tech) and copy the
+   connection string.
 
-To learn more about Next.js, take a look at the following resources:
+2. **Get API keys:** [Anthropic](https://platform.claude.com) and
+   [Voyage AI](https://www.voyageai.com).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. **Configure env:**
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   ```bash
+   cp .env.example .env.local   # then fill in the values
+   ```
 
-## Deploy on Vercel
+4. **Create the schema and ingest the corpus:**
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+   ```bash
+   npm install
+   npm run db:init
+   npm run ingest      # pulls GitHub READMEs + content/*.md, embeds, upserts
+   ```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+5. **Run:**
+
+   ```bash
+   npm run dev         # http://localhost:3000
+   ```
+
+## How it works
+
+- **Ingest** (`scripts/ingest.ts`) pulls every non-fork repo README for
+  `GITHUB_USERNAME` plus any markdown in `content/` (resume, writeups). Documents are
+  chunked on markdown headings (oversized sections split by paragraph, tiny fragments
+  merged), embedded with Voyage in batches, and upserted transactionally — re-running
+  is idempotent.
+- **Retrieval** (`src/lib/retrieve.ts`) embeds the question (`input_type: "query"`),
+  runs a top-k cosine search via pgvector's HNSW index, and drops chunks below a
+  similarity floor so off-topic questions get an honest "I don't know."
+- **Chat** (`src/app/api/chat/route.ts`) validates input, rate-limits per IP, injects
+  retrieved chunks into the final user turn as `<source>` blocks, and streams Claude's
+  answer. Source links ride back on an `X-Sources` response header and render as chips
+  under each answer.
+
+## Operational notes
+
+- **Refreshing content:** re-run `npm run ingest` after pushing new repos/READMEs
+  (or wire it into a GitHub Action on a schedule).
+- **Rate limiting** is in-memory per serverless instance — fine for blunting casual
+  abuse. For a durable cross-instance limit, swap in Upstash Ratelimit.
+- **Spend guard:** set a monthly budget limit in the Anthropic Console — this is a
+  public, unauthenticated endpoint.
+- **Changing embedding models** changes vector dimensions: update `vector(1024)` in
+  `db/schema.sql`, re-run `db:init` logic (or `alter table`), and re-ingest.
