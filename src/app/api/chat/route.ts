@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { retrieve } from "@/lib/retrieve";
+import { retrieve, getPortfolioIndex } from "@/lib/retrieve";
 
 export const maxDuration = 60; // Vercel: allow up to 60s for streaming
 
@@ -13,16 +13,28 @@ usually recruiters, hiring managers, and engineers evaluating Riley's work.
 Riley is an AI/ML engineer (MS in Analytics, Georgia Tech; former PE-track civil engineer) \
 focused on applied LLM systems and inference efficiency.
 
-Rules:
-- Answer ONLY from the context provided in each message. The context is drawn from Riley's \
-GitHub repositories, resume, and project writeups.
-- If the context doesn't contain the answer, say so plainly and suggest what to ask instead \
-or point to Riley's GitHub (https://github.com/RileyGreiff) or email (rgreiff97@gmail.com). \
-Never invent projects, employers, dates, or capabilities.
-- When you reference a project, name it and include its repository link from the context.
-- Keep answers concise — a few sentences to a short paragraph, bullets when comparing \
-multiple projects. Recruiters are skimming.
-- Stay on topic: Riley's work, skills, and experience. Politely decline anything else \
+Each message gives you two things:
+- <portfolio_index>: the full list of Riley's projects, each with a one-line description. \
+This is your map of everything he has built — use it to answer broad questions and to \
+compare projects against each other.
+- <context>: detailed excerpts retrieved for this specific question, from Riley's GitHub \
+READMEs, resume, and project writeups.
+
+How to answer:
+- Engage with the question — including open-ended or subjective ones like "what's most \
+impressive?", "what should I look at first?", or "what are Riley's strengths?". Use the index \
+and details to reason and compare, then give a clear, opinionated answer: make a pick, justify \
+it in a sentence or two, and offer to go deeper on whichever project the visitor wants. Do not \
+refuse a subjective question or dump the whole list — take a position.
+- Ground specific factual claims (metrics, tech, dates, outcomes) in the index or context. \
+Don't invent numbers, employers, or capabilities you don't see. If a detail isn't present, \
+share what the index supports and point to the project's repo or Riley's GitHub \
+(https://github.com/RileyGreiff) / email (rgreiff97@gmail.com).
+- Name the projects you reference and include their repository link when it appears in the \
+index or context.
+- Keep it concise — a few sentences to a short paragraph; bullets when comparing. Recruiters \
+are skimming.
+- Stay on topic: Riley's work, skills, and experience. Politely decline unrelated requests \
 (general coding help, opinions on other people, etc.).`;
 
 // --- CORS: the widget is served from the static GitHub Pages site, a different
@@ -127,9 +139,10 @@ export async function POST(request: Request) {
 
   const question = messages[messages.length - 1].content;
 
-  let chunks;
+  let chunks, index;
   try {
-    chunks = await retrieve(question);
+    // Retrieve question-specific detail and the full portfolio index in parallel.
+    [chunks, index] = await Promise.all([retrieve(question), getPortfolioIndex()]);
   } catch (err) {
     // Retrieval touches Postgres + the Voyage API — the usual failure points on
     // a fresh deploy (missing/wrong DATABASE_URL or VOYAGE_API_KEY). Surface a
@@ -138,6 +151,10 @@ export async function POST(request: Request) {
     const detail = err instanceof Error ? err.message : String(err);
     return Response.json({ error: "Retrieval failed.", detail }, { status: 500, headers: cors });
   }
+
+  const indexBlock = index
+    .map((e) => `- ${e.title}${e.source_url ? ` (${e.source_url})` : ""}: ${e.snippet}`)
+    .join("\n");
 
   const contextBlock =
     chunks.length > 0
@@ -148,14 +165,17 @@ export async function POST(request: Request) {
               `${c.heading ? ` section="${c.heading}"` : ""}>\n${c.content}\n</source>`,
           )
           .join("\n\n")
-      : "(no relevant context found)";
+      : "(no specific excerpts retrieved — answer from the portfolio index above)";
 
-  // Inject retrieved context into the final user turn; keep the system prompt stable.
+  // Inject the portfolio index + retrieved context into the final user turn;
+  // keep the system prompt stable.
   const claudeMessages: Anthropic.MessageParam[] = [
     ...messages.slice(0, -1),
     {
       role: "user",
-      content: `<context>\n${contextBlock}\n</context>\n\n${question}`,
+      content:
+        `<portfolio_index>\n${indexBlock}\n</portfolio_index>\n\n` +
+        `<context>\n${contextBlock}\n</context>\n\n${question}`,
     },
   ];
 
