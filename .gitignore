@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Pulled from a private repo — kept local for ingest, not published
+content/wedding-dossier.md
